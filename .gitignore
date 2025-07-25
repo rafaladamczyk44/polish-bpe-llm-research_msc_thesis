@@ -1,6 +1,6 @@
 .venv/
 .idea/
-.wandb/
+wandb/
 secrets.yaml
 *.json
 *.vocab
