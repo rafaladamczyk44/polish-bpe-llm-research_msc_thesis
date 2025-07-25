@@ -5,15 +5,6 @@ import json
 import pickle
 from pathlib import Path
 
-"""
-With a full Polish corpus, you'd expect:
-
-Fertility rate: ~1.3-1.5 tokens/word (currently probably >2.0)
-Common words: single tokens ("Polski", "jest", "nie")
-Morphology: preserved splits ("na|pisać", "kot|ami")
-
-"""
-
 class BPETokenizerPL:
     """
     Polish tokenizer class.
