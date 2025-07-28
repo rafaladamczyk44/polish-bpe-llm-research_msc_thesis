@@ -23,6 +23,8 @@ class BPETokenizerPL:
         # Polish-specific characters
         self.pol_chars = set('ąćęłńóśżźĄĆĘŁŃÓŚŻŹ')
         self.pol_vowels = set('aąeęioóuy')
+        self.pol_pattern = r'[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ0-9\s\.,!?;:()\[\]\-"\']'
+
 
         # Special tokens for sequence tagging
         self.special_tokens = {
@@ -222,6 +224,14 @@ class BPETokenizerPL:
         tokens = re.findall(pattern, text, re.UNICODE)
         return tokens
 
+    def _filter_non_polish_words(self, text):
+        """
+        Remove all non-Polish words and characters from the training corpus
+        :param text:
+        :return:
+        """
+        return re.sub(f'[^{self.pol_pattern[1:-1]}]', ' ', text)
+
     # Training
     def _identify_morpheme_boundaries(self, word: str):
         """
@@ -383,15 +393,64 @@ class BPETokenizerPL:
 
         return new_word_tokens
 
-    def train(self, corpus, verbose=True):
+    def train(self, corpus, verbose=True, sample_size=None, min_word_freq=2):
         """
-        Train BPE on corpus with morphological constraints.
+        Train BPE on corpus with morphological constraints and optional sampling.
 
         :param corpus: List of text documents
         :param verbose: Whether to print training progress
+        :param sample_size: Maximum number of unique words to use for training (None = use all)
+        :param min_word_freq: Minimum frequency threshold for words (filters rare words)
         """
+        if verbose:
+            print('Filtering corpus to remove non-Polish text...')
+
+            # Filter each document in the corpus
+        filtered_corpus = []
+        for i, text in enumerate(corpus):
+            filtered_text = self._filter_non_polish_words(text)
+            if filtered_text:  # Only keep non-empty texts
+                filtered_corpus.append(filtered_text)
+
+            # Progress indicator for large corpora
+            if verbose and (i + 1) % 100000 == 0:
+                print(f'  Filtered {i + 1:,} documents...')
+
+        if verbose:
+            print(f'  Filtering complete: {len(corpus):,} → {len(filtered_corpus):,} documents')
+
+        corpus = filtered_corpus
+
         # Get word frequencies
+        if verbose:
+            print("Calculating word frequencies...")
         word_freq = self._word_frequency(corpus)
+
+        # Sampling by minimum word frequency
+        if min_word_freq > 1:
+            original_size = len(word_freq)
+            word_freq = {word: count for word, count in word_freq.items() if count >= min_word_freq}
+            if verbose:
+                print(f"Filtered from {original_size} to {len(word_freq)} words (min_freq={min_word_freq})")
+
+        # Sampling top-n words to reduce the memory used
+        if sample_size and len(word_freq) > sample_size:
+            if verbose:
+                print(f"Sampling top {sample_size} words from {len(word_freq)} unique words...")
+
+            # Sort by frequency and keep top N
+            top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:sample_size]
+
+            # Calculate coverage before sampling
+            total_occurrences = sum(word_freq.values())
+            sampled_occurrences = sum(count for _, count in top_words)
+            coverage = sampled_occurrences / total_occurrences
+
+            if verbose:
+                print(f"Sample coverage: {coverage:.1%} of total word occurrences")
+                print(f"Least frequent word in sample: '{top_words[-1][0]}' (freq={top_words[-1][1]})")
+
+            word_freq = dict(top_words)
 
         # Initialize vocabulary with characters and special tokens
         self.vocab = self.special_tokens.copy()
@@ -402,7 +461,6 @@ class BPETokenizerPL:
             chars.update(word)
 
         for char in sorted(chars):
-            # Move to next token
             self.vocab[char] = self.next_token_id
             self.next_token_id += 1
 
@@ -418,7 +476,6 @@ class BPETokenizerPL:
                 self.next_token_id += 1
 
         for word, count in word_freq.items():
-
             # Skip if protected word
             if word in self.protected_words:
                 continue
@@ -439,20 +496,23 @@ class BPETokenizerPL:
         # BPE training loop
         iteration = 0
         while len(self.vocab) < self.vocab_size:
-            # Count all pairs
-            pair_counts = Counter()
-            for tokens, boundaries, count in zip(word_tokens, word_boundaries, word_counts):
-                pairs = self._get_pairs(tokens)
+            # Count all pairs in single pass (with optimization)
+            pair_counts = {}
 
-                for pair in pairs:
-                    # Find ALL occurrences of this pair in the word
-                    for i in range(len(tokens) - 1):
-                        if (tokens[i], tokens[i + 1]) == pair:
-                            # Calculate position
-                            pos = sum(len(tokens[j]) for j in range(i))
-                            # Check if merge would cross morpheme boundary
-                            if pos + len(tokens[i]) not in boundaries:
-                                pair_counts[pair] += count
+            for tokens, boundaries, count in zip(word_tokens, word_boundaries, word_counts):
+                # Pre-compute cumulative positions once per word
+                # So no need to re-calculate the postions every time
+                positions = [0]
+                for token in tokens:
+                    positions.append(positions[-1] + len(token))
+
+                # Single pass through tokens
+                for i in range(len(tokens) - 1):
+                    # Check if merge would cross morpheme boundary
+                    merge_position = positions[i + 1]
+                    if merge_position not in boundaries:
+                        pair = (tokens[i], tokens[i + 1])
+                        pair_counts[pair] = pair_counts.get(pair, 0) + count
 
             if not pair_counts:
                 break
