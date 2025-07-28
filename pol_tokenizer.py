@@ -397,15 +397,47 @@ class BPETokenizerPL:
         """
         Train BPE on corpus with morphological constraints and optional sampling.
 
+        This method implements Byte-Pair Encoding (BPE) with Polish-specific morphological awareness.
+        Unlike standard BPE, it prevents merging across morpheme boundaries, ensuring that:
+        - Stems remain intact (e.g., "kot" in "kota", "kotów")
+        - Prefixes stay separate from roots (e.g., "na|pisać", "prze|czytać")
+        - Inflectional endings are preserved (e.g., "czyt|am", "dom|u")
+
+        Training process:
+        1. Filter corpus to retain only Polish text using regex pattern matching
+        2. Calculate word frequencies and apply sampling/filtering thresholds
+        3. Initialize vocabulary with special tokens (<pad>, <unk>, etc.) and all characters
+        4. For each word, identify morpheme boundaries using linguistic rules
+        5. Iteratively find most frequent adjacent token pairs that don't cross boundaries
+        6. Merge the best pair across all words and add to vocabulary
+        7. Repeat until target vocabulary size is reached
+
+        Morphological constraints prevent linguistically invalid merges:
+        - "kot|a" won't become "kota" (preserves stem-ending boundary)
+        - "na|pisać" won't become "napisać" (preserves prefix-root boundary)
+        - "czyt|am" won't become "czytam" (preserves stem-inflection boundary)
+
+        Memory optimization techniques:
+        - Pre-compute character positions once per word to avoid recalculation
+        - Use frequency weighting to prioritize common patterns
+        - Optional sampling to limit training set size for large corpora
+
+        Example training progression:
+        Initial: ['k', 'o', 't', 'a'] with boundary at position 3
+        Iteration 1: ('k', 'o') → ['ko', 't', 'a']
+        Iteration 2: ('k', 'o', 't') → ['kot', 'a'] (stops at boundary)
+        Final result: "kot|a" structure preserved
+
         :param corpus: List of text documents
         :param verbose: Whether to print training progress
         :param sample_size: Maximum number of unique words to use for training (None = use all)
         :param min_word_freq: Minimum frequency threshold for words (filters rare words)
         """
+
         if verbose:
             print('Filtering corpus to remove non-Polish text...')
 
-            # Filter each document in the corpus
+        # Filter each document in the corpus
         filtered_corpus = []
         for i, text in enumerate(corpus):
             filtered_text = self._filter_non_polish_words(text)
@@ -465,9 +497,9 @@ class BPETokenizerPL:
             self.next_token_id += 1
 
         # Prepare words for BPE (character-level tokenization)
-        word_tokens = []
-        word_boundaries = []
-        word_counts = []
+        word_tokens = [] # for char level
+        word_boundaries = [] # for boundries
+        word_counts = [] # frequency of each word
 
         # Add protected words directly to vocabulary first
         for word in self.protected_words:
@@ -483,6 +515,8 @@ class BPETokenizerPL:
             # Skip punctuation and very short words
             if len(word) > 1 and any(c.isalpha() for c in word):
                 tokens = list(word)
+
+                # Apply the boundary logic
                 boundaries = self._identify_morpheme_boundaries(word)
 
                 word_tokens.append(tokens)
