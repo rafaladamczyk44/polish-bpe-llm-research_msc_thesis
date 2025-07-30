@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-
 class SelfAttention(nn.Module):
     """
     Masked self attention module for Transformer model
@@ -49,7 +48,6 @@ class SelfAttention(nn.Module):
         context_vector = attention_weights @ values
 
         return context_vector
-
 
 class MultiHeadAttention(nn.Module):
     """
