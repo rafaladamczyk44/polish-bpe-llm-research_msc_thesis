@@ -44,7 +44,6 @@ class BPETokenizerPL:
             'ins': ['em', 'iem', 'om', 'ami', 'mi'],  # Instrumental
             'loc': ['e', 'u', 'i', 'ach', 'ech'],     # Locative
             'voc': ['e', 'u', 'o', 'i']               # Vocative
-
         }
 
         self.prefixes = [
@@ -492,6 +491,7 @@ class BPETokenizerPL:
         for word in word_freq:
             chars.update(word)
 
+        # Get to the first open position
         for char in sorted(chars):
             self.vocab[char] = self.next_token_id
             self.next_token_id += 1
@@ -512,13 +512,15 @@ class BPETokenizerPL:
             if word in self.protected_words:
                 continue
 
-            # Skip punctuation and very short words
+            # Skip words shorter than 1 char and punctuation/numbers
             if len(word) > 1 and any(c.isalpha() for c in word):
                 tokens = list(word)
 
+                # For other words,
                 # Apply the boundary logic
                 boundaries = self._identify_morpheme_boundaries(word)
 
+                # Add tokens and boundaries
                 word_tokens.append(tokens)
                 word_boundaries.append(boundaries)
                 word_counts.append(count)
@@ -530,7 +532,7 @@ class BPETokenizerPL:
         # BPE training loop
         iteration = 0
         while len(self.vocab) < self.vocab_size:
-            # Count all pairs in single pass (with optimization)
+            # Count all pairs in single pass
             pair_counts = {}
 
             for tokens, boundaries, count in zip(word_tokens, word_boundaries, word_counts):
@@ -545,6 +547,7 @@ class BPETokenizerPL:
                     # Check if merge would cross morpheme boundary
                     merge_position = positions[i + 1]
                     if merge_position not in boundaries:
+                        # Create the pair if the boundary is not crosses
                         pair = (tokens[i], tokens[i + 1])
                         pair_counts[pair] = pair_counts.get(pair, 0) + count
 
@@ -554,10 +557,10 @@ class BPETokenizerPL:
             # Find most frequent pair
             best_pair = max(pair_counts, key=pair_counts.get)
 
-            # Merge the pair
+            # Merge the pair for all vocab
             word_tokens = self._merge_pair(best_pair, word_tokens)
 
-            # Add to vocabulary
+            # Add to vocabulary and move to the next position in vocab
             new_token = best_pair[0] + best_pair[1]
             if new_token not in self.vocab:
                 self.vocab[new_token] = self.next_token_id
