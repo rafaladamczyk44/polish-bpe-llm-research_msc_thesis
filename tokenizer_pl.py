@@ -486,8 +486,6 @@ class BPETokenizerPL:
 
         # Prepare words for BPE (character-level tokenization)
         word_data = [] # for char level
-        # word_boundaries = [] # for boundries
-        # word_counts = [] # frequency of each word
 
         for word, count in word_freq.items():
             # Skip if protected word
@@ -516,6 +514,97 @@ class BPETokenizerPL:
 
         # BPE training loop
         iteration = 0
+        while len(self.vocab) < self.vocab_size:
+            # Count all pairs in single pass
+            pair_counts = self._get_pairs(word_data)
+
+            if not pair_counts:
+                break
+
+            # Find most frequent pair
+            best_pair = max(pair_counts, key=pair_counts.get)
+
+            # Merge the pair for all vocab
+            self._merge_pair(best_pair, word_data)
+
+            # Add to vocabulary and move to the next position in vocab
+            new_token = best_pair[0] + best_pair[1]
+            if new_token not in self.vocab:
+                self.vocab[new_token] = self.next_token_id
+                self.next_token_id += 1
+                self.merges.append(best_pair)
+
+            iteration += 1
+
+            print(f'Running iteration {iteration}, vocabulary size: {len(self.vocab)}')
+            if iteration % save_interval == 0:
+                self._save_checkpoint(f"training/tokenizer/checkpoints/checkpoint_{iteration}.pkl", iteration)
+
+            if iteration % save_interval == 0:
+                gc.collect()
+
+            if verbose and iteration % save_interval == 0:
+                print(f"Iteration {iteration}: Vocab size = {len(self.vocab)}, Merged pairs = {len(pair_counts)}")
+                print(f"Merged '{best_pair[0]}' + '{best_pair[1]}' -> '{new_token}'")
+
+        if verbose:
+            print(f"Training complete. Final vocabulary size: {len(self.vocab)}")
+
+    def resume_training_from_corpus(self, checkpoint_path, corpus, sample_size, min_word_freq, batch_size, save_interval=500, verbose=True):
+        """
+        Resume training from existing checkpoint by reconstructing word_data from corpus
+
+        :param checkpoint_path: Path to existing checkpoint
+        :param corpus: Original corpus (same as used for initial training)
+        :param sample_size: Same parameters as initial training
+        :param min_word_freq: Same parameters as initial training
+        :param batch_size: Batch size for corpus processing
+        :param verbose: Whether to print progress
+        :param save_interval: Save checkpoint every N iterations
+        """
+        # Load checkpoint state
+        iteration = self._load_checkpoint(checkpoint_path)
+
+        if verbose:
+            print("Reconstructing training data from corpus...")
+
+        # Recreate word_data exactly as in initial training
+        word_freq = self._word_frequency(corpus, sample_size, min_word_freq, batch_size)
+
+        word_data = []  # for char level
+
+        for word, count in word_freq.items():
+            # Skip if protected word
+            if word in self.protected_words:
+                continue
+
+            # Skip words shorter than 1 char and punctuation/numbers
+            if len(word) > 1 and any(c.isalpha() for c in word):
+                tokens = list(word)
+
+                # For other words,
+                # Apply the boundary logic
+                boundaries = self._identify_morpheme_boundaries(word)
+
+                # Add tokens and boundaries
+                word_data.append((tokens, boundaries, count))
+
+        # Free up the memory
+        del word_freq
+        gc.collect()
+
+        # Apply all previous merges to catch word_data up to checkpoint state
+        for i, merge in enumerate(self.merges):
+            self._merge_pair(merge, word_data)
+            if verbose and (i + 1) % 1000 == 0:
+                print(f"  Applied {i + 1}/{len(self.merges)} merges...")
+
+        if verbose:
+            print("Word data reconstructed and caught up!")
+            print(f"Resuming training from iteration {iteration + 1}")
+
+        # BPE training loop
+
         while len(self.vocab) < self.vocab_size:
             # Count all pairs in single pass
             pair_counts = self._get_pairs(word_data)
@@ -685,6 +774,21 @@ class BPETokenizerPL:
             pickle.dump(checkpoint, f)
 
         print(f"  Checkpoint saved at iteration {iteration}")
+
+    def _load_checkpoint(self, checkpoint_path):
+        """Load training checkpoint"""
+        with open(checkpoint_path, 'rb') as f:
+            checkpoint = pickle.load(f)
+
+        self.vocab = checkpoint['vocab']
+        self.merges = checkpoint['merges']
+        self.next_token_id = checkpoint['next_token_id']
+        self.vocab_size = checkpoint['vocab_size']
+
+        print(f"Loaded checkpoint from iteration {checkpoint['iteration']}")
+        print(f"Current vocab size: {len(self.vocab):,}")
+        print(f"Merges applied: {len(self.merges)}")
+        return checkpoint['iteration']
 
     def save_vocab(self, path: str):
         """Save the trained tokenizer state to disk."""
