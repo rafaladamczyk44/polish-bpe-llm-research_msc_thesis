@@ -1,9 +1,11 @@
+import gc
 import re
-import unicodedata
-from collections import Counter
 import json
 import pickle
+import unicodedata
 from pathlib import Path
+from collections import Counter, defaultdict
+
 
 class BPETokenizerPL:
     """
@@ -23,8 +25,6 @@ class BPETokenizerPL:
         # Polish-specific characters
         self.pol_chars = set('ąćęłńóśżźĄĆĘŁŃÓŚŻŹ')
         self.pol_vowels = set('aąeęioóuy')
-        self.pol_pattern = r'[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ0-9\s\.,!?;:()\[\]\-"\']'
-
 
         # Special tokens for sequence tagging
         self.special_tokens = {
@@ -190,15 +190,14 @@ class BPETokenizerPL:
 
         self.next_token_id = len(self.special_tokens)
 
-    # Pre-processing
-    def normalize(self, text: str):
+    def _normalize_and_preprocess(self, text):
         """
         Normalize Polish text, keep the diacritics
+        Split on whitespace and punctuation, but keep punctuation as separate tokens
 
         :param text: Input text
-        :return: Normalized text
+        :return: List of pre-processed tokens
         """
-
         # Keeping the polish chars
         text = unicodedata.normalize('NFC', text)
         text = text.lower()
@@ -206,32 +205,12 @@ class BPETokenizerPL:
         # Standardize the whitespaces
         text = re.sub(r'\s+', ' ', text)
 
-        return text.strip()
-
-    def preprocess(self, text):
-        """
-        Basic word tokenization of normalized text
-        Split on whitespace and punctuation, but keep punctuation as separate tokens
-
-        :param text: Input text
-        :return: List of pre-processed tokens
-        """
-
-        text = self.normalize(text)
+        text = text.strip()
 
         pattern = r'(\w+|[^\w\s])'
         tokens = re.findall(pattern, text, re.UNICODE)
         return tokens
 
-    def _filter_non_polish_words(self, text):
-        """
-        Remove all non-Polish words and characters from the training corpus
-        :param text:
-        :return:
-        """
-        return re.sub(f'[^{self.pol_pattern[1:-1]}]', ' ', text)
-
-    # Training
     def _identify_morpheme_boundaries(self, word: str):
         """
         This method analyzes a Polish word to find positions where morphemes (meaningful units)
@@ -336,63 +315,101 @@ class BPETokenizerPL:
 
         return boundaries
 
-    def _word_frequency(self, corpus):
+    def _word_frequency(self, corpus, sample_size, min_word_freq, batch_size):
         """
-        Calculate the frequency of each word in a corpus.
-
-        :param corpus: Input dataset
-        :return: Word frequencies
+        Split corpus into batches, apply Polish filtering and count words in each batch
+        :param corpus:
+        :param sample_size:
+        :param min_word_freq:
+        :param batch_size:
+        :return:
         """
         word_freq = Counter()
+        processed_docs = 0
 
-        for text in corpus:
-            tokens = self.preprocess(text)
-            word_freq.update(tokens)
+        # Process in batches
+        for i in range(0, len(corpus), batch_size):
+            # 0 to 10k batch
+            batch = corpus[i:i+batch_size]
+            for text in batch:
+                tokens = self._normalize_and_preprocess(text)
+                word_freq.update(tokens)
 
-        return word_freq
+            processed_docs += len(batch)
 
-    def _get_pairs(self, word_tokens):
+            print(f'Processed {processed_docs} docs')
+
+            # Garbage collector
+            if processed_docs % (batch_size * 10) == 0:
+                gc.collect()
+
+        # Count word frequency
+        word_freq = {
+            word: count for word, count in word_freq.items() if count >= min_word_freq
+        }
+
+        # Order top words in sample size
+        top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:sample_size]
+
+        return dict(top_words)
+
+    def _get_pairs(self, words):
         """
         Get all adjacent pairs from tokenized word.
+        Update: using pre-computed positions for optimizing
 
-        :param word_tokens: List of tokens representing a word
-
+        :param words: List of tokens representing a word
         :returns: List of adjacent token pairs
         """
-        pairs = set()
-        for i in range(len(word_tokens) - 1):
-            pairs.add((word_tokens[i], word_tokens[i + 1]))
-        return pairs
+        pair_counts = defaultdict(int)
 
-    def _merge_pair(self, pair, word_tokens):
+        for tokens, boundaries, count in words:
+            # Initial position
+            positions = [0]
+
+            for token in tokens:
+                # Add the tokens
+                positions.append(positions[-1] + len(token))
+
+            for i in range(len(tokens) - 1):
+                merge_position = positions[i + 1]
+                if merge_position not in boundaries:
+                    pair = (tokens[i], tokens[i+1])
+                    pair_counts[pair] += count
+
+        return pair_counts
+
+    def _merge_pair(self, pair, word_data):
         """
         Merge pairs in all word tokens.
+        Update: Merge in place to save memory
 
         :param pair: Pair of tokens to merge
-        :param word_tokens: List of tokenized words
+        :param word_data: List of tokenized words
 
         :return:Updated word tokens with pair merged
         """
 
-        new_word_tokens = []
+        target_first, target_second = pair
+        new_token = target_first + target_second
 
-        for tokens in word_tokens:
+        for i, (tokens, boundaries, count) in enumerate(word_data):
             new_tokens = []
-            i = 0
+            j = 0
 
-            while i < len(tokens):
-                if i < len(tokens) - 1 and (tokens[i], tokens[i + 1]) == pair:
-                    new_tokens.append(tokens[i] + tokens[i + 1])
-                    i += 2
+            while j < len(tokens):
+
+                if j < len(tokens) - 1 and tokens[j] == target_first and tokens[j+1] == target_second:
+                    new_tokens.append(new_token)
+                    # Jump to next pair pos
+                    j += 2
                 else:
-                    new_tokens.append(tokens[i])
-                    i += 1
+                    new_tokens.append(tokens[j])
+                    j += 1
 
-            new_word_tokens.append(new_tokens)
+            word_data[i] = (new_tokens, boundaries, count)
 
-        return new_word_tokens
-
-    def train(self, corpus, verbose=True, sample_size=None, min_word_freq=2):
+    def train(self, corpus, sample_size, min_word_freq, batch_size, save_interval=500, verbose=True):
         """
         Train BPE on corpus with morphological constraints and optional sampling.
 
@@ -431,60 +448,31 @@ class BPETokenizerPL:
         :param verbose: Whether to print training progress
         :param sample_size: Maximum number of unique words to use for training (None = use all)
         :param min_word_freq: Minimum frequency threshold for words (filters rare words)
+        :param batch_size: Number of words to train on at a time
+        :param save_interval: Number of words to save at a time
+        :param checkpoint_path: Path to checkpoint file
         """
-
-        if verbose:
-            print('Filtering corpus to remove non-Polish text...')
-
-        # Filter each document in the corpus
-        filtered_corpus = []
-        for i, text in enumerate(corpus):
-            filtered_text = self._filter_non_polish_words(text)
-            if filtered_text:  # Only keep non-empty texts
-                filtered_corpus.append(filtered_text)
-
-            # Progress indicator for large corpora
-            if verbose and (i + 1) % 100000 == 0:
-                print(f'  Filtered {i + 1:,} documents...')
-
-        if verbose:
-            print(f'  Filtering complete: {len(corpus):,} → {len(filtered_corpus):,} documents')
-
-        corpus = filtered_corpus
 
         # Get word frequencies
         if verbose:
             print("Calculating word frequencies...")
-        word_freq = self._word_frequency(corpus)
 
-        # Sampling by minimum word frequency
-        if min_word_freq > 1:
-            original_size = len(word_freq)
-            word_freq = {word: count for word, count in word_freq.items() if count >= min_word_freq}
-            if verbose:
-                print(f"Filtered from {original_size} to {len(word_freq)} words (min_freq={min_word_freq})")
+        word_freq = self._word_frequency(corpus, sample_size, min_word_freq, batch_size)
+        # Force garbage collection after corpus processing
+        gc.collect()
 
-        # Sampling top-n words to reduce the memory used
-        if sample_size and len(word_freq) > sample_size:
-            if verbose:
-                print(f"Sampling top {sample_size} words from {len(word_freq)} unique words...")
+        if verbose:
+            print(f"Word frequency calculation complete. Using {len(word_freq):,} unique words")
 
-            # Sort by frequency and keep top N
-            top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:sample_size]
-
-            # Calculate coverage before sampling
-            total_occurrences = sum(word_freq.values())
-            sampled_occurrences = sum(count for _, count in top_words)
-            coverage = sampled_occurrences / total_occurrences
-
-            if verbose:
-                print(f"Sample coverage: {coverage:.1%} of total word occurrences")
-                print(f"Least frequent word in sample: '{top_words[-1][0]}' (freq={top_words[-1][1]})")
-
-            word_freq = dict(top_words)
 
         # Initialize vocabulary with characters and special tokens
         self.vocab = self.special_tokens.copy()
+
+        # Add protected words directly to vocabulary first
+        for word in self.protected_words:
+            if word not in self.vocab:
+                self.vocab[word] = self.next_token_id
+                self.next_token_id += 1
 
         # Add all characters to vocabulary
         chars = set()
@@ -497,15 +485,9 @@ class BPETokenizerPL:
             self.next_token_id += 1
 
         # Prepare words for BPE (character-level tokenization)
-        word_tokens = [] # for char level
-        word_boundaries = [] # for boundries
-        word_counts = [] # frequency of each word
-
-        # Add protected words directly to vocabulary first
-        for word in self.protected_words:
-            if word not in self.vocab:
-                self.vocab[word] = self.next_token_id
-                self.next_token_id += 1
+        word_data = [] # for char level
+        # word_boundaries = [] # for boundries
+        # word_counts = [] # frequency of each word
 
         for word, count in word_freq.items():
             # Skip if protected word
@@ -521,35 +503,22 @@ class BPETokenizerPL:
                 boundaries = self._identify_morpheme_boundaries(word)
 
                 # Add tokens and boundaries
-                word_tokens.append(tokens)
-                word_boundaries.append(boundaries)
-                word_counts.append(count)
+                word_data.append((tokens, boundaries, count))
+
+
+        # Free up the memory
+        del word_freq
+        gc.collect()
 
         if verbose:
-            print(f"Training on {len(word_tokens)} unique words")
+            print(f"Training on {len(word_data)} unique words")
             print(f"Initial vocabulary size: {len(self.vocab)}")
 
         # BPE training loop
         iteration = 0
         while len(self.vocab) < self.vocab_size:
             # Count all pairs in single pass
-            pair_counts = {}
-
-            for tokens, boundaries, count in zip(word_tokens, word_boundaries, word_counts):
-                # Pre-compute cumulative positions once per word
-                # So no need to re-calculate the postions every time
-                positions = [0]
-                for token in tokens:
-                    positions.append(positions[-1] + len(token))
-
-                # Single pass through tokens
-                for i in range(len(tokens) - 1):
-                    # Check if merge would cross morpheme boundary
-                    merge_position = positions[i + 1]
-                    if merge_position not in boundaries:
-                        # Create the pair if the boundary is not crosses
-                        pair = (tokens[i], tokens[i + 1])
-                        pair_counts[pair] = pair_counts.get(pair, 0) + count
+            pair_counts = self._get_pairs(word_data)
 
             if not pair_counts:
                 break
@@ -558,7 +527,7 @@ class BPETokenizerPL:
             best_pair = max(pair_counts, key=pair_counts.get)
 
             # Merge the pair for all vocab
-            word_tokens = self._merge_pair(best_pair, word_tokens)
+            self._merge_pair(best_pair, word_data)
 
             # Add to vocabulary and move to the next position in vocab
             new_token = best_pair[0] + best_pair[1]
@@ -568,15 +537,21 @@ class BPETokenizerPL:
                 self.merges.append(best_pair)
 
             iteration += 1
-            print(f'Running iteration {iteration}')
-            if verbose and iteration % 100 == 0:
+
+            print(f'Running iteration {iteration}, vocabulary size: {len(self.vocab)}')
+            if iteration % save_interval == 0:
+                self._save_checkpoint(f"training/tokenizer/checkpoints/checkpoint_{iteration}.pkl", iteration)
+
+            if iteration % save_interval == 0:
+                gc.collect()
+
+            if verbose and iteration % save_interval == 0:
                 print(f"Iteration {iteration}: Vocab size = {len(self.vocab)}, Merged pairs = {len(pair_counts)}")
                 print(f"Merged '{best_pair[0]}' + '{best_pair[1]}' -> '{new_token}'")
 
         if verbose:
             print(f"Training complete. Final vocabulary size: {len(self.vocab)}")
 
-    # Main used methods
     def encode(self, text: str):
         """
         Encode text to token IDs.
@@ -585,7 +560,7 @@ class BPETokenizerPL:
 
         :returns:List of token IDs
         """
-        tokens = self.preprocess(text)
+        tokens = self._normalize_and_preprocess(text)
         encoded = []
 
         for token in tokens:
@@ -661,7 +636,6 @@ class BPETokenizerPL:
 
         return tokens
 
-    # Metrics
     def calculate_fertility(self, test_corpus):
         """
         How many tokens per word on average?
@@ -697,53 +671,57 @@ class BPETokenizerPL:
         # Should be > 99% on in-domain text
         return coverage
 
-    # Utils
-    def save_vocab(self, path: str, format: str = 'json'):
-        """
-        Save the trained tokenizer state to disk.
+    def _save_checkpoint(self, checkpoint_path, iteration):
+        """Save training checkpoint"""
+        checkpoint = {
+            'vocab': self.vocab,
+            'merges': self.merges,
+            'next_token_id': self.next_token_id,
+            'iteration': iteration,
+            'vocab_size': self.vocab_size
+        }
 
-        :param path: Base path for saving (without extension)
-        :param format: Save format ('json', 'pickle', or 'both')
-        """
+        with open(checkpoint_path, 'wb') as f:
+            pickle.dump(checkpoint, f)
+
+        print(f"  Checkpoint saved at iteration {iteration}")
+
+    def save_vocab(self, path: str):
+        """Save the trained tokenizer state to disk."""
         path = Path(path)
 
-        # Prepare tokenizer state
         tokenizer_state = {
             'vocab_size': self.vocab_size,
             'vocab': self.vocab,
             'merges': self.merges,
             'next_token_id': self.next_token_id,
             'special_tokens': self.special_tokens,
-            # Save linguistic data for reproducibility
             'pol_chars': list(self.pol_chars),
             'case_endings': self.case_endings,
             'protected_words': list(self.protected_words),
-            'verb_endings': self.verb_endings,
-            'alternations': self.alternations
+            'verb_endings': self.verb_endings
         }
 
-        if format in ['json', 'both']:
-            # Save as JSON (human-readable, cross-platform)
-            json_path = path.with_suffix('.json')
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(tokenizer_state, f, ensure_ascii=False, indent=2)
-            print(f"Saved tokenizer to {json_path}")
 
-        if format in ['pickle', 'both']:
-            # Save as pickle (preserves Python objects exactly)
-            pickle_path = path.with_suffix('.pkl')
-            with open(pickle_path, 'wb') as f:
-                pickle.dump(tokenizer_state, f)
-            print(f"Saved tokenizer to {pickle_path}")
-
-        # Save vocab only (for HuggingFace compatibility)
+        json_path = path.with_suffix('.json')
+        pickle_path = path.with_suffix('.pkl')
         vocab_path = path.with_suffix('.vocab')
+
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(tokenizer_state, f, ensure_ascii=False, indent=2)
+        print(f"Saved tokenizer to {json_path}")
+
+        with open(pickle_path, 'wb') as f:
+            pickle.dump(tokenizer_state, f)
+        print(f"Saved tokenizer to {pickle_path}")
+
         with open(vocab_path, 'w', encoding='utf-8') as f:
             for token, token_id in sorted(self.vocab.items(), key=lambda x: x[1]):
                 f.write(f"{token}\t{token_id}\n")
+
         print(f"Saved vocabulary to {vocab_path}")
 
-    def load_vocab(self, path: str, format: str = 'json'):
+    def load_vocab(self, path: str, format: str='json'):
         """
         Load a previously saved tokenizer state.
 
@@ -784,7 +762,7 @@ class BPETokenizerPL:
         print(f"Number of merges: {len(self.merges)}")
 
     @classmethod
-    def from_pretrained(cls, path: str, format: str = 'json'):
+    def from_pretrained(cls, path: str, format:str='json'):
         """
         Class method to create a tokenizer instance from saved state.
 
@@ -795,4 +773,3 @@ class BPETokenizerPL:
         tokenizer = cls()
         tokenizer.load_vocab(path, format)
         return tokenizer
-
