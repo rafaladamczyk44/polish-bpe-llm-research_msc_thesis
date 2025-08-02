@@ -642,44 +642,45 @@ class BPETokenizerPL:
             print(f"Training complete. Final vocabulary size: {len(self.vocab)}")
 
     def encode(self, text: str):
-        """
-        Encode text to token IDs.
-
-        :param text: Text to encode
-
-        :returns:List of token IDs
-        """
+        """Encode text to token IDs using greedy longest-match."""
         tokens = self._normalize_and_preprocess(text)
         encoded = []
 
         for token in tokens:
-            # Try to find token in vocabulary
+            # Skip if it's a protected word or already in vocab
             if token in self.vocab:
                 encoded.append(self.vocab[token])
                 continue
 
-            # Apply BPE merges
-            chars = list(token)
-            for merge in self.merges:
-                i = 0
-                while i < len(chars) - 1:
-                    if (chars[i], chars[i + 1]) == merge:
-                        chars[i] = chars[i] + chars[i + 1]
-                        chars.pop(i + 1)
-                    else:
-                        i += 1
+            # Greedy segmentation: find longest subwords
+            word_tokens = []
+            i = 0
 
-            # Encode resulting subwords
-            for subword in chars:
-                if subword in self.vocab:
-                    encoded.append(self.vocab[subword])
+            while i < len(token):
+                # Find longest matching subword starting at position i
+                longest_match = None
+                longest_length = 0
+
+                # Check all possible substrings starting at i
+                for j in range(len(token), i, -1):  # Start from longest
+                    substring = token[i:j]
+                    if substring in self.vocab:
+                        longest_match = substring
+                        longest_length = j - i
+                        break
+
+                if longest_match:
+                    word_tokens.append(longest_match)
+                    i += longest_length
                 else:
-                    # Handle unknown subwords character by character
-                    for char in subword:
-                        if char in self.vocab:
-                            encoded.append(self.vocab[char])
-                        else:
-                            encoded.append(self.vocab['<unk>'])
+                    # Fallback to character level
+                    char = token[i]
+                    word_tokens.append(char if char in self.vocab else '<unk>')
+                    i += 1
+
+            # Convert to IDs
+            for subword in word_tokens:
+                encoded.append(self.vocab.get(subword, self.vocab['<unk>']))
 
         return encoded
 
@@ -859,7 +860,7 @@ class BPETokenizerPL:
         self.case_endings = state['case_endings']
         self.protected_words = set(state['protected_words'])
         self.verb_endings = state['verb_endings']
-        self.alternations = state['alternations']
+#        self.alternations = state['alternations']
 
         print(f"Loaded tokenizer from {path}")
         print(f"Vocabulary size: {len(self.vocab)}")
