@@ -663,7 +663,10 @@ class BPETokenizerPL:
 
                 # Check all possible substrings starting at i
                 for j in range(len(token), i, -1):  # Start from longest
+
+                    # sub string moving window
                     substring = token[i:j]
+
                     if substring in self.vocab:
                         longest_match = substring
                         longest_length = j - i
