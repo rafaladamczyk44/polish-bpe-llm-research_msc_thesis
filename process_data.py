@@ -1,6 +1,6 @@
-from datasets import load_dataset
 import re
 import pickle
+from datasets import load_dataset
 
 # Load
 ds = load_dataset("chrisociepa/wikipedia-pl-20230401")
@@ -26,11 +26,11 @@ for i, text in enumerate(training_data):
     if text:  # Only keep non-empty texts
         filtered_training_data.append(filtered_text)
 
-
-# Test
-print(filtered_training_data[:5])
-
 # Save to pickle
 with open('training/data/filtered_polish_wikipedia.pkl', 'wb') as f:
     pickle.dump(filtered_training_data, f)
 
+with open('training/data/filtered_polish_wikipedia.pkl', 'rb') as f:
+    training_data = pickle.load(f)
+
+print(training_data[:5])
