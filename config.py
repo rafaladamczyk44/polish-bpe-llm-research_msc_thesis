@@ -1,4 +1,4 @@
-class Config25M:
+class Config18M:
     vocab_size = 30000
     d_model = 256
     num_heads = 8
