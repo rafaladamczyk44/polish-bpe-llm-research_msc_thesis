@@ -141,9 +141,6 @@ def main():
         collate_fn=collate_fn
     )
 
-    print(f"Loaded dataset with {len(dataset)} sequences")
-    print(f"Batch size: {args.batch_size}, Workers: {args.num_workers}")
-
     # Initialize model
     model = LMTraining(
         vocab_size=CONFIG.vocab_size,
