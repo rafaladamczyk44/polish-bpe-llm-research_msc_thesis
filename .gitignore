@@ -1,8 +1,10 @@
 .venv/
 .idea/
 wandb/
-training/
 test_scripts/
 .secrets.yaml
+
 *.json
 *.vocab
+*.ckpt
+*.pkl
