@@ -8,7 +8,7 @@ class Config18M:
     context_size = 512
     d_ff = 4*d_model
 
-class Config70M:
+class Config50M:
     vocab_size = VOCAB_SIZE
     d_model = 512
     num_heads = 8
