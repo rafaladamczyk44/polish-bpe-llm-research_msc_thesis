@@ -98,7 +98,7 @@ class LMTraining(L.LightningModule):
 def main():
     args = parse_args()
     CONFIG = get_config(args.config)
-    torch.set_float32_matmul_precision('medium')
+    # torch.set_float32_matmul_precision('medium')
 
     # Setup dataset and dataloader
     dataset = WikiDataset(args.data_path)
