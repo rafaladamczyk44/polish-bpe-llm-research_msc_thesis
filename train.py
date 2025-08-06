@@ -63,23 +63,24 @@ class LMTraining(L.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        inputs = batch[:, :-1]
-        targets = batch[:, 1:]
+        with torch.no_grad():
+            inputs = batch[:, :-1]
+            targets = batch[:, 1:]
 
-        logits = self(inputs)
+            logits = self(inputs)
 
-        loss = F.cross_entropy(
-            input=logits.reshape(-1, logits.size(-1)),
-            target=targets.reshape(-1),
-            ignore_index=0
-        )
+            loss = F.cross_entropy(
+                input=logits.reshape(-1, logits.size(-1)),
+                target=targets.reshape(-1),
+                ignore_index=0
+            )
 
-        perplexity = torch.exp(loss)
+            perplexity = torch.exp(loss)
 
-        self.log('val_loss', loss, prog_bar=True)
-        self.log('val_perplexity', perplexity, prog_bar=True)
+            self.log('val_loss', loss, prog_bar=True)
+            self.log('val_perplexity', perplexity, prog_bar=True)
 
-        return loss
+            return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
@@ -98,7 +99,7 @@ class LMTraining(L.LightningModule):
 def main():
     args = parse_args()
     CONFIG = get_config(args.config)
-    # torch.set_float32_matmul_precision('medium')
+    torch.set_float32_matmul_precision('medium')
 
     # Setup dataset and dataloader
     dataset = WikiDataset(args.data_path)
