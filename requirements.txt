@@ -4,3 +4,4 @@ wandb>=0.20.0
 datasets>=4.0.0
 numpy
 pandas
+rich
