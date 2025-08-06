@@ -162,7 +162,7 @@ def main():
         callbacks=[
             checkpoint_callback,
             RichModelSummary(max_depth=2),
-            RichProgressBar(),
+            # RichProgressBar(),
             LearningRateMonitor(logging_interval='step')
         ],
         enable_checkpointing=True,
