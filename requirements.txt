@@ -5,3 +5,5 @@ datasets>=4.0.0
 numpy
 pandas
 rich
+spacy~=3.8.7
+sentencepiece~=0.2.0
