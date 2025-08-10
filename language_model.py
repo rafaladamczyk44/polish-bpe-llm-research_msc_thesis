@@ -135,13 +135,15 @@ class LanguageModel(nn.Module):
         x = self.output(x)
         return x
 
-    def generate(self, start_tokens, max_length, temperature=1.0):
+    def generate(self, start_tokens, max_length, temperature=0.8, top_k=50, top_p=0.9, repetition_penalty=1.1):
         """
         Autoregressive text generation
 
         :param start_tokens:(batch_size, seq_len) with starting tokens
         :param max_length: Max tokens to generate
         :param temperature: Sampling temperature
+        :param top_k: Top k filtering
+        :param top_p: Nucleus filtering
         :return: (batch_size, seq_len + max_len) generated tokens
         """
         self.eval()
@@ -155,8 +157,30 @@ class LanguageModel(nn.Module):
                 input_tokens = tokens[:, -self.context_size:]
                 logits = self(input_tokens)
 
-                # Logits for last position
+                # Logits for last position FIRST
                 logits = logits[:, -1, :] / temperature
+
+                # Apply repetition penalty
+                # Reduce probability of recently used tokens
+                if repetition_penalty != 1.0:
+                    for token_id in set(tokens[0].tolist()):  # Unique tokens in sequence
+                        logits[0, token_id] /= repetition_penalty
+
+                # Keep only the k most likely tokens, set rest to -inf
+                if top_k > 0:
+                    indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+                    logits[indices_to_remove] = float('-inf')
+
+                # Keep tokens until their cumulative probability ≥ p
+                if top_p < 1.0:
+                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                    sorted_indices_to_remove = cumulative_probs > top_p
+                    # Map back to original indices
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 0] = 0
+                    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                    logits[indices_to_remove] = float('-inf')
 
                 # Sample from the distribution
                 probs = F.softmax(logits, dim=-1)
