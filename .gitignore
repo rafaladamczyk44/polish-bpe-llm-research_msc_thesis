@@ -8,3 +8,5 @@ test_scripts/
 *.vocab
 *.ckpt
 *.pkl
+*.model
+*.txt
